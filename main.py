@@ -2,6 +2,7 @@ import json
 import logging
 import multiprocessing
 import struct
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pprint import pprint
 from typing import Union
@@ -1573,44 +1574,42 @@ def process_event(event_id):
         return actions
 
 
-if __name__ == '__main__':
-    # cx_Oracle.init_oracle_client(lib_dir=r"C:\oracle\instantclient_23_13")
-    c = CMergeActions()
-    # c.find_events(82809508)
-    # event_ids = list(c.fined_events([78445636, 78445624, 78445645, 78445663, 78437689, 78445651, 78445654, 78445648, 78445633, 78445627, 78445660, 78445621, 78399862, 78399952, 78445597, 78445603, 78506239, 78506911, 78506914, 97510997, 97511080, 97511461, 97511481, 98909421, 98909486]))
-    # event_ids = list(c.fined_events(
-    #     [86391784, 86391797, 86391768, 86482529, 93361917, 86391801, 88014991, 86391780, 86398786, 86391792, 87988431,
-    #      91093133, 374045742, 86391776, 78445636, 78445624, 78445645, 78445663, 78437689, 78445651, 78445654, 78445648,
-    #      78445633, 78445627, 78445660, 78445621, 78399862, 78399952, 78445597, 78445603, 78506239, 78506911, 78506914,
-    #      97510997, 97511080, 97511461, 97511481, 98909421, 98909486]))
+logging.basicConfig(filename='client_processing.log',
+                    level=logging.INFO,
+                    format='%(asctime)s %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S')
 
-    #    with multiprocessing.Pool(processes=4) as pool:
-    #       results = pool.map(process_event, event_ids)
-    # event_ids = [396038604,372364712,372345307,374485107,386410919,443597216,384148054,373461147,375146427,372421538,]
+
+def process_message(client_id):
+    # Создаем новый экземпляр CMergeActions для каждого потока
+    c = CMergeActions()
+    print(f"Consumed client ID: {client_id}")
+    # Process the consumed client ID
+    try:
+        c.find_events(client_id)
+    except Exception as e:
+        with open('error_clients.txt', 'a') as error_file:
+            error_file.write(f"{client_id},")
+        logging.error(f"Error processing client ID: {client_id}, Error: {e}")
+
+
+def callback(ch, method, properties, body, executor):
+    client_id = struct.unpack('i', body)[0]
+    executor.submit(process_message, client_id)
+
+
+if __name__ == '__main__':
     connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
     channel = connection.channel()
     channel.queue_declare(queue='client_bars')
 
+    max_workers = 10  # Задайте оптимальное количество потоков для вашего процессора
 
-    def callback(ch, method, properties, body):
-        client_id = struct.unpack('i', body)[0]
-        print(f"Consumed client ID: {client_id}")
-        # Process the consumed client ID
-        try:
-            c.find_events(client_id)
-        except Exception as e:
-            with open('error_clients.txt', 'a') as error_file:
-                error_file.write(f"{client_id},")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        def wrapped_callback(ch, method, properties, body):
+            callback(ch, method, properties, body, executor)
 
 
-    channel.basic_consume(queue='client_bars', on_message_callback=callback, auto_ack=True)
-    logging.info('Started consuming...')
-    channel.start_consuming()
-
-
-    # for value in event_ids:
-    #     break
-    #     print(value)
-    #     c.find_actions(value)
-# #     pprint(c.find_actions(292275456))
-#     # # pprint(OracleBase().test())блawd
+        channel.basic_consume(queue='client_bars', on_message_callback=wrapped_callback, auto_ack=True)
+        logging.info('Started consuming...')
+        channel.start_consuming()
